@@ -59,53 +59,9 @@ Lambda = tf.keras.layers.Lambda # any function
 InputTypes = data_formatters.base.InputTypes
 
 
-class LossHistory(tf.keras.callbacks.Callback): 
- 
-  def on_train_begin(self, logs={}):
-    self.losses = {'batch':[], 'epoch':[]}
-    self.accuracy = {'batch':[], 'epoch':[]}
-    self.val_loss = {'batch':[], 'epoch':[]}
-    self.val_acc = {'batch':[], 'epoch':[]}
-  
-  # record every batch
-  def on_batch_end(self, batch, logs={}):
-    self.losses['batch'].append(logs.get('loss'))
-    self.accuracy['batch'].append(logs.get('acc'))
-    self.val_loss['batch'].append(logs.get('val_loss'))
-    self.val_acc['batch'].append(logs.get('val_acc'))
-  
-  # record every epoch
-  def on_epoch_end(self, batch, logs={}):
-    self.losses['epoch'].append(logs.get('loss'))
-    self.accuracy['epoch'].append(logs.get('acc'))
-    self.val_loss['epoch'].append(logs.get('val_loss'))
-    self.val_acc['epoch'].append(logs.get('val_acc'))
-  
-  def loss_plot(self, loss_type):
-    '''
-    loss_type: ['epoch', 'batch']
-    '''
-    iters = range(len(self.losses[loss_type]))
-    plt.figure()
-    # acc
-    # plt.plot(iters, self.accuracy[loss_type], 'r', label='train acc')
-    # loss
-    plt.plot(iters, self.losses[loss_type], label='train loss')
-    if loss_type == 'epoch':
-      # val_acc
-      # plt.plot(iters, self.val_acc[loss_type], 'b', label='val acc')
-      # val_loss
-      plt.plot(iters, self.val_loss[loss_type], label='val loss')
-      plt.grid(True)
-      plt.xlabel(loss_type)
-      plt.ylabel('loss')
-      plt.legend(loc="upper right")
-      plt.savefig("cbcv.png")
-      plt.show()
 
+# Layer utility functions. ===========================
 
-
-# Layer utility functions.
 def linear_layer(size,
                  activation=None,
                  use_time_distributed=False,
@@ -279,7 +235,9 @@ def gated_residual_network(x,
     return add_and_norm([skip, gating_layer])
 
 
-# Attention Components.
+
+# Attention Components. ===========================
+
 def get_decoder_mask(self_attn_inputs):
   """Returns causal mask to apply for self-attention layer.
 
@@ -411,6 +369,9 @@ class InterpretableMultiHeadAttention():
     return outputs, attn
 
 
+
+# Utilities. =============================
+
 class TFTDataCache(object):
   """Caches data for the TFT."""
 
@@ -438,10 +399,55 @@ class TFTDataCache(object):
     return key in cls._data_cache
 
 
+class LossHistory(tf.keras.callbacks.Callback): 
+ 
+  def on_train_begin(self, logs={}):
+    self.losses = {'batch':[], 'epoch':[]}
+    self.accuracy = {'batch':[], 'epoch':[]}
+    self.val_loss = {'batch':[], 'epoch':[]}
+    self.val_acc = {'batch':[], 'epoch':[]}
+  
+  # record every batch
+  def on_batch_end(self, batch, logs={}):
+    self.losses['batch'].append(logs.get('loss'))
+    self.accuracy['batch'].append(logs.get('acc'))
+    self.val_loss['batch'].append(logs.get('val_loss'))
+    self.val_acc['batch'].append(logs.get('val_acc'))
+  
+  # record every epoch
+  def on_epoch_end(self, batch, logs={}):
+    self.losses['epoch'].append(logs.get('loss'))
+    self.accuracy['epoch'].append(logs.get('acc'))
+    self.val_loss['epoch'].append(logs.get('val_loss'))
+    self.val_acc['epoch'].append(logs.get('val_acc'))
+  
+  def loss_plot(self, loss_type, plot_path):
+    '''
+    loss_type: ['epoch', 'batch']
+    '''   
+    iters = range(len(self.losses[loss_type]))
+    plt.figure()
+    ## train acc
+    # plt.plot(iters, self.accuracy[loss_type], 'r', label='train acc')
+    ## val_acc
+    # plt.plot(iters, self.val_acc[loss_type], 'b', label='val acc')
+    ## train loss
+    plt.plot(iters, self.losses[loss_type], label='train loss')
+    # val_loss
+    plt.plot(iters, self.val_loss[loss_type], label='val loss')
+    plt.grid(True)
+    plt.xlabel(loss_type)
+    plt.ylabel('loss')
+    plt.legend(loc="upper right")
+    plt.savefig(plot_path)
+    plt.show()
 
 
 
-# TFT model definitions.
+
+
+# TFT model definitions. ======================
+
 class TemporalFusionTransformer(object):
   """Defines Temporal Fusion Transformer.
 
@@ -523,6 +529,8 @@ class TemporalFusionTransformer(object):
     # Serialisation options
     self._temp_folder = os.path.join(params['model_folder'], 'tmp')
     self.reset_temp_folder()
+    self._log_folder = os.path.join(params['model_folder'], 'logs')
+    self._model_folder = params['model_folder']
 
     # Extra components to store Tensorflow nodes for attention computations
     self._input_placeholder = None
@@ -542,8 +550,8 @@ class TemporalFusionTransformer(object):
   def get_tft_embeddings(self, all_inputs):
     """Transforms raw inputs to embeddings.
 
-    Applies linear transformation onto continuous variables and uses embeddings
-    for categorical variables.
+    Applies linear transformation onto continuous variables 
+    and uses embeddings for categorical variables.
 
     Args:
       all_inputs: Inputs to transform
@@ -866,10 +874,15 @@ class TemporalFusionTransformer(object):
 
   def _build_base_graph(self):
     """Returns graph defining layers of the TFT.
-    output:
-    -transformer_layer: layer
-    -all_inputs: raw input
-    -attention_components: attention weights
+    
+    all_inputs -> unknown_inputs, known_combined_layer, obs_inputs, static_inputs) -> 
+    historical_inputs / future_inputs -> historical_features / future_features -> 
+    lstm_layer -> temporal_feature_layer -> enriched -> decoder -> transformer_layer
+    
+    Returns:
+    - transformer_layer: layer
+    - all_inputs: raw input
+    - attention_components: attention weights
     """
 
     # Size definitions.
@@ -888,6 +901,9 @@ class TemporalFusionTransformer(object):
     unknown_inputs, known_combined_layer, obs_inputs, static_inputs \
         = self.get_tft_embeddings(all_inputs)
 
+
+
+    # historical vs future split (all time varying, feature + target) =============
     # Isolate known and observed historical inputs. (0 ~ encoder length)
     if unknown_inputs is not None:
       historical_inputs = concat([
@@ -908,8 +924,9 @@ class TemporalFusionTransformer(object):
 
 
 
+    # static variable selection ============================
     def static_combine_and_mask(embedding):
-      """Applies variable selection network to static inputs.
+      """Applies variable selection network (sparse weight) to static inputs.
 
       Args:
         embedding: Transformed static inputs
@@ -980,6 +997,7 @@ class TemporalFusionTransformer(object):
 
 
 
+    # temporal variable selection ============================
     def lstm_combine_and_mask(embedding):
       """Apply temporal variable selection networks.
 
@@ -1038,7 +1056,9 @@ class TemporalFusionTransformer(object):
         historical_inputs)
     future_features, future_flags, _ = lstm_combine_and_mask(future_inputs)
 
-    # LSTM layer
+
+
+    # LSTM layer ================================================
     def get_lstm(return_state):
       """Returns LSTM cell initialized with default parameters."""
       if self.use_cudnn:
@@ -1075,7 +1095,9 @@ class TemporalFusionTransformer(object):
 
     lstm_layer = concat([history_lstm, future_lstm], axis=1)
 
-    # Apply gated skip connection
+
+
+    # Apply gated skip connection ====================================
     input_embeddings = concat([historical_features, future_features], axis=1)
 
     lstm_layer, _ = apply_gating_layer(
@@ -1084,7 +1106,7 @@ class TemporalFusionTransformer(object):
 
 
 
-    # Static enrichment layers
+    # Static enrichment layers 
     expanded_static_context = K.expand_dims(static_context_enrichment, axis=1)
     enriched, _ = gated_residual_network(
         temporal_feature_layer,
@@ -1094,7 +1116,7 @@ class TemporalFusionTransformer(object):
         additional_context=expanded_static_context,
         return_gate=True)
 
-    # Decoder self attention
+    # Decoder self attention 
     self_attn_layer = InterpretableMultiHeadAttention(
         self.num_heads, self.hidden_layer_size, dropout=self.dropout_rate)
 
@@ -1147,6 +1169,7 @@ class TemporalFusionTransformer(object):
 
     with tf.variable_scope(self.name):
 
+      # 1) model building
       transformer_layer, all_inputs, attention_components \
           = self._build_base_graph()
 
@@ -1156,21 +1179,23 @@ class TemporalFusionTransformer(object):
 
       self._attention_components = attention_components
 
-      adam = tf.keras.optimizers.Adam(
-          lr=self.learning_rate, clipnorm=self.max_gradient_norm)
-
       model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
-
-      ## save model architecture summary
-      model_summary_path = os.path.join(self._temp_folder, '{}.txt'.format(datetime.datetime.now().strftime("%Y-%m-%d_%H_%M")))
+      
+      ## save model architecture summary in text file
+      model_summary_path = os.path.join(self._model_folder, '{}.txt'.format('model_architecture'))
       def myprint(s, filepath=model_summary_path):
                 with open(filepath, 'a') as f:
                   print(s, file=f)
       model.summary(print_fn=myprint)
-      print("\n\n Save Keras Model Summary in ", model_summary_path)
+      print("\n\nSave Model Configuration in ", model_summary_path)
 
 
+      # 2) optimizer
+      adam = tf.keras.optimizers.Adam(
+          lr=self.learning_rate, clipnorm=self.max_gradient_norm)
 
+
+      # 3) loss ========================================          
       valid_quantiles = self.quantiles
       output_size = self.output_size
 
@@ -1180,7 +1205,7 @@ class TemporalFusionTransformer(object):
         Attributes:
           quantiles: Quantiles to compute losses
         """
-        # file_writer = tf.summary.FileWriter("/root/autodl-tmp/google-research/tft/logs")
+
         def __init__(self, quantiles):
           """Initializes computer with quantiles for loss calculations.
 
@@ -1209,8 +1234,12 @@ class TemporalFusionTransformer(object):
 
       quantile_loss = QuantileLossCalculator(valid_quantiles).quantile_loss
 
+
+      # 1+2+3) compile
       model.compile(
-          loss=quantile_loss, optimizer=adam, sample_weight_mode='temporal')
+          loss=quantile_loss, 
+          optimizer=adam, 
+          sample_weight_mode='temporal')
 
       self._input_placeholder = all_inputs
 
@@ -1226,7 +1255,7 @@ class TemporalFusionTransformer(object):
       valid_df: DataFrame for validation data
     """
 
-    print('\n*** Fitting {} ***'.format(self.name))
+    print('\n\n*** Fitting {} ***'.format(self.name))
 
     # Add relevant callbacks
     history =  LossHistory()
@@ -1234,13 +1263,16 @@ class TemporalFusionTransformer(object):
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=self.early_stopping_patience,
+            verbose=1,
             min_delta=1e-4),
         tf.keras.callbacks.ModelCheckpoint(
             filepath=self.get_keras_saved_path(self._temp_folder),
             monitor='val_loss',
-            save_best_only=True,
+            verbose=1,
+            save_best_only=True, # only save best
             save_weights_only=True),
-        tf.keras.callbacks.TerminateOnNaN(),
+        tf.keras.callbacks.TerminateOnNaN(), # terminates training when a NaN loss is encountered
+        tf.keras.callbacks.TensorBoard(log_dir=self._log_folder),
         history
     ]
 
@@ -1271,8 +1303,8 @@ class TemporalFusionTransformer(object):
 
     self.model.fit(
         x=data,
-        y=np.concatenate([labels, labels, labels], axis=-1),
-        sample_weight=active_flags,
+        y=np.concatenate([labels, labels, labels], axis=-1), # quantile
+        sample_weight=active_flags, # weights for the training samples, used for weighting the loss function (during training only)
         epochs=self.num_epochs,
         batch_size=self.minibatch_size,
         validation_data=(val_data,
@@ -1282,6 +1314,8 @@ class TemporalFusionTransformer(object):
         shuffle=True,
         use_multiprocessing=True,
         workers=self.n_multiprocessing_workers)
+    
+    
 
     # Load best checkpoint again
     tmp_checkpont = self.get_keras_saved_path(self._temp_folder)
@@ -1289,14 +1323,42 @@ class TemporalFusionTransformer(object):
       self.load(
           self._temp_folder,
           use_keras_loadings=True)
-
     else:
       print('Cannot load from {}, skipping ...'.format(self._temp_folder))
 
-    history.loss_plot('epoch')
+    history.loss_plot('epoch', os.path.join(self._model_folder, "loss_plot.png"))
 
 
 
+  def get_data_to_fit(self, train_df=None, valid_df=None):
+        
+    print('Getting batched_data')
+    if train_df is None:
+      print('Using cached training data')
+      train_data = TFTDataCache.get('train')
+    else:
+      train_data = self._batch_data(train_df)
+
+    if valid_df is None:
+      print('Using cached validation data')
+      valid_data = TFTDataCache.get('valid')
+    else:
+      valid_data = self._batch_data(valid_df)
+
+    print('Using keras standard fit')
+
+    def _unpack(data):
+      return data['inputs'], data['outputs'], \
+          self._get_active_locations(data['active_entries'])
+
+    # Unpack without sample weights
+    data, labels, active_flags = _unpack(train_data)
+    val_data, val_labels, val_flags = _unpack(valid_data)
+    
+    return train_data, valid_data, data, labels, active_flags, val_data, val_labels, val_flags
+           
+        
+        
   def evaluate(self, data=None, eval_metric='loss'):
     """Applies evaluation metric to the training data.
 

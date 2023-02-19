@@ -21,10 +21,10 @@ for the main experiments used in the publication.
 
 import os
 
-import data_formatters.electricity
-import data_formatters.favorita
-import data_formatters.traffic
-import data_formatters.volatility
+# import data_formatters.electricity
+# import data_formatters.favorita
+# import data_formatters.traffic
+# import data_formatters.volatility
 
 import data_formatters.acq
 import data_formatters.init_aov
@@ -81,11 +81,13 @@ class ExperimentConfig(object):
       print('Using root folder {}'.format(root_folder))
 
     self.root_folder = root_folder
+    print('root folder:', root_folder)
     self.experiment = experiment
     # self.data_folder = os.path.join(root_folder, 'data', experiment)
     self.data_folder = os.path.join(root_folder, '../data/preprocessed_data/tft_google')
     self.model_folder = os.path.join(root_folder, 'saved_models', experiment)
     self.results_folder = os.path.join(root_folder, 'results', experiment)
+    print('data_folder:', self.data_folder)
 
     # Creates folders if they don't exist
     for relevant_directory in [
@@ -153,10 +155,10 @@ class ExperimentConfig(object):
     """
 
     data_formatter_class = {
-        'volatility': data_formatters.volatility.VolatilityFormatter,
-        'electricity': data_formatters.electricity.ElectricityFormatter,
-        'traffic': data_formatters.traffic.TrafficFormatter,
-        'favorita': data_formatters.favorita.FavoritaFormatter,
+        # 'volatility': data_formatters.volatility.VolatilityFormatter,
+        # 'electricity': data_formatters.electricity.ElectricityFormatter,
+        # 'traffic': data_formatters.traffic.TrafficFormatter,
+        # 'favorita': data_formatters.favorita.FavoritaFormatter,
         
         'acq_10': data_formatters.acq.AcqTenFormatter,
         'acq_100': data_formatters.acq.AcqHundredFormatter,

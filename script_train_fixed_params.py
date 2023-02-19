@@ -42,6 +42,7 @@ from matplotlib import pyplot as plt
 ## disable all warning messages
 import warnings
 warnings.filterwarnings("ignore")
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # INFO and WARNING messages are not printed
 
 ## load local files
 import data_formatters.base
@@ -52,6 +53,7 @@ import libs.utils as utils
 
 ## version compatibility
 import tensorflow.compat.v1 as tf
+tf.logging.set_verbosity(tf.logging.ERROR) # deprecation warning is not printed
 
 ExperimentConfig = expt_settings.configs.ExperimentConfig # defines experiment configs and paths to outputs. experiment config detail is in data_formatter.
 ModelClass = libs.tft_model.TemporalFusionTransformer # full TFT architecture with training, evaluation and prediction using Pandas Dataframe inputs
@@ -61,26 +63,22 @@ HyperparamOptManager = libs.hyperparam_opt.HyperparamOptManager # classes used f
 
 
 def main(expt_name,
-         ver_name,
          use_gpu,
          gpu_number,
-        #  model_folder,
          data_csv_path,
          data_formatter,
+         num_repeats=1,
          use_testing_mode=False):
   
   """Trains tft based on defined model params.
 
   Args:
-    expt_name: Name of experiment
-    use_gpu: Whether to run tensorflow with GPU operations
-    gpu_number: GPU number if use_gpu = TRUE and multiple GPUs available
-    # model_folder: Folder path where models are serialized
+    expt_name: Name of experiment e.g. 'acq_1000' specified in expt_settings.configs.ExperimentConfig
+    use_gpu: [yes/no] Whether to run tensorflow with GPU operations
+    gpu_number: GPU device number if use_gpu = TRUE and multiple GPUs available
     data_csv_path: Path to csv file containing data
     data_formatter: Dataset-specific data formatter instance. inherit from data_formatters.base.GenericDataFormatter
-    use_testing_mode: Uses a smaller models and data sizes for testing purposes
-      only -- switch to False to use original default settings
-      
+    use_testing_mode: Uses a smaller models and data sizes for testing purposes only -- switch to False to use original default settings      
   """
 
   ## check whether imported data formatter is a correct class instance.
@@ -120,7 +118,7 @@ def main(expt_name,
   params = data_formatter.get_default_model_params() # Returns default optimised model parameters.
   
   
-  ## set a folder to save models 
+  ## Folder path where models are serialized
   model_folder = os.path.join(config.model_folder, datetime.datetime.now().strftime("%Y-%m-%d_%H_%M"))
   params["model_folder"] = model_folder
   print("Model will be saved in: ", model_folder)
@@ -139,51 +137,56 @@ def main(expt_name,
   opt_manager = HyperparamOptManager({k: [params[k]] for k in params}, fixed_params, model_folder)
 
 
+
+  #====================================================
+  print("\n\n*** Running calibration ***")
   ## For each iteration, we start with different initialization to find best parameters set
   ## that provides smallest local minimum of validation loss.
-  print("\n\n*** Running calibration ***")
-  num_repeats = 1 # Training -- one iteration only
+  num_repeats = num_repeats # Training -- one iteration only
   best_loss = np.Inf
   
   for _ in range(num_repeats):
 
     tf.reset_default_graph()
     with tf.Graph().as_default(), tf.Session(config=tf_config) as sess:
-
+      # set session on keras
       tf.keras.backend.set_session(sess)
 
-      params = opt_manager.get_next_parameters() # get new set of parameters from random search in new iteration
+      # set initial parameter, model, training data
+      params = opt_manager.get_next_parameters() # get initialized parameters from random search in new iteration
       model = ModelClass(params, use_cudnn=use_gpu)
-
       if not model.training_data_cached():
-        model.cache_batched_data(train, "train", num_samples=train_samples)
-        model.cache_batched_data(valid, "valid", num_samples=valid_samples)
+        # Data to batch and cache & Maximum number of samples to extract (-1 to use all data)
+        # model.cache_batched_data(train, "train", num_samples=train_samples)
+        # model.cache_batched_data(valid, "valid", num_samples=valid_samples)
+        model.cache_batched_data(train, "train", num_samples=-1)
+        model.cache_batched_data(valid, "valid", num_samples=-1)
 
+      # run session with initialization
       sess.run(tf.global_variables_initializer())
 
       model.fit()
-
-      ## try to save tensorflow summary
-      # train_loss, step_num, _ = sess.run(
-      #           [model.loss, model.global_step, model.train_op])
-      # train_summary = tf2.Summary(value=[tf2.Summary.Value(tag='train_loss', simple_value=train_loss)])
-      # file_writer.add_summary(train_summary, step_num)
-      
+    
       val_loss = model.evaluate()
-      # tf.summary.scalar('val_loss', data=val_loss, step=epoch)
 
       if val_loss < best_loss:
         opt_manager.update_score(params, val_loss, model)
         best_loss = val_loss
 
       tf.keras.backend.set_session(default_keras_session)
+      
+      print('\n* Iteration ' + str(_) + ' is done.')
 
 
 
+  #====================================================
   print("\n\n*** Running tests ***")
+  
   tf.reset_default_graph()
   with tf.Graph().as_default(), tf.Session(config=tf_config) as sess:
+    # set session on keras
     tf.keras.backend.set_session(sess)
+    
     best_params = opt_manager.get_best_params()
     model = ModelClass(best_params, use_cudnn=use_gpu)
 
@@ -204,7 +207,8 @@ def main(expt_name,
     else: 
       valid_fortest = valid[valid['acq_week'] > str(pd.to_datetime(valid['acq_week'].iloc[-1]) - datetime.timedelta(weeks=gap)).split()[0]]
 
-    ## quantile = [0.1, 0.5, 0.9]
+
+    print("\nComputing test loss")
     output_map = model.predict(pd.concat([valid_fortest,test]), return_targets=True)
     targets = data_formatter.format_predictions(output_map["targets"])
     p10_forecast = data_formatter.format_predictions(output_map["p10"])
@@ -229,7 +233,7 @@ def main(expt_name,
     p10_forecast_cal.to_csv(f'{config.results_folder}/{version_name}/pred_q10_cal.csv')
 
 
-    print("\nComputing test loss")
+   
 
     def extract_numerical_data(data):
       """Strips out forecast time and identifier columns."""
@@ -286,19 +290,12 @@ if __name__ == "__main__":
         choices=experiment_names,
         help="Experiment Name. Default={}".format(",".join(experiment_names)))
     parser.add_argument(
-        "--ver_name",
-        metavar="v",
-        type=str,
-        nargs="?",
-        default=str(date.today()),
-        help="Experiment's Version Name. Default={}".format(str(date.today())))  
-    parser.add_argument(
         "--output_folder",
         metavar="f",
         type=str,
         nargs="?",
-        default=".",
-        help="Path to folder for data download")
+        default=str(date.today()), 
+        help="Path to folder for output data. Default={}".format(str(date.today())))
     parser.add_argument(
         "--use_gpu",
         metavar="g",
@@ -312,18 +309,24 @@ if __name__ == "__main__":
         type=str,
         default='all',
         help="GPU device number. Default={}. Or set GPU id as an integer.".format("all"))    
+    parser.add_argument(
+        "--num_iter",
+        type=int,
+        nargs="?",
+        default=1,
+        help="number of iterations. Default={}".format(1))
 
     args = parser.parse_known_args()[0]
 
     root_folder = None if args.output_folder == "." else args.output_folder
 
-    return args.expt_name, args.ver_name, args.gpu_num, root_folder, args.use_gpu == "yes"
+    return args.expt_name, args.gpu_num, root_folder, args.use_gpu == "yes", args.num_iter
 
-  name, version_name, gpu_num, output_folder, use_tensorflow_with_gpu = get_args()
+  name, gpu_num, output_folder, use_tensorflow_with_gpu, num_repeats = get_args()
 
   print("Using output folder {}".format(output_folder))
 
-  config = ExperimentConfig(name, output_folder)
+  config = ExperimentConfig(experiment=name, root_folder=output_folder)
   formatter = config.make_data_formatter()
 
 
@@ -331,12 +334,14 @@ if __name__ == "__main__":
   # Customise inputs to main() for new datasets.
   main(
       expt_name=name,
-      ver_name=version_name,
       use_gpu=use_tensorflow_with_gpu,
       gpu_number=gpu_num,
-      # model_folder=os.path.join(config.model_folder, name + "_fixed"),
       data_csv_path=config.data_csv_path,
       data_formatter=formatter,
+      num_repeats=num_repeats,
       use_testing_mode=False)  # Change to false to use original default params
 
 
+
+### check tensorboard: tensorboard --logdir {output_folder}/saved_models/{experiment}/{%Y-%m-%d_%H_%M}/logs
+### TensorBoard 2.9.1 at http://localhost:6006/
