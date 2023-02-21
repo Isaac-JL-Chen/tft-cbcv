@@ -20,12 +20,7 @@ for the main experiments used in the publication.
 """
 
 import os
-
-# import data_formatters.electricity
-# import data_formatters.favorita
-# import data_formatters.traffic
-# import data_formatters.volatility
-
+import datetime
 import data_formatters.acq
 import data_formatters.init_aov
 import data_formatters.init_spend
@@ -49,9 +44,7 @@ class ExperimentConfig(object):
       experiment.
   """
 
-  default_experiments = ['volatility', 'electricity', 'traffic', 'favorita', 
-                         
-                         'acq_10', 'acq_100', 'acq_1000', 
+  default_experiments = ['acq_10', 'acq_100', 'acq_1000', 
                          'init_aov_10', 'init_aov_100', 'init_aov_1000', 
                          'init_spend_10', 'init_spend_100', 'init_spend_1000', 
                          'censored_spend_10', 'censored_spend_100', 'censored_spend_1000', 
@@ -76,18 +69,15 @@ class ExperimentConfig(object):
 
     # Defines all relevant paths
     if root_folder is None:
-      root_folder = os.path.join(
-          os.path.dirname(os.path.realpath(__file__)), '..', 'outputs')
-      print('Using root folder {}'.format(root_folder))
+      root_folder = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
 
-    self.root_folder = root_folder
-    print('root folder:', root_folder)
+    self.root_folder = os.path.join('outputs',  f'{experiment}-{root_folder}')
     self.experiment = experiment
-    # self.data_folder = os.path.join(root_folder, 'data', experiment)
-    self.data_folder = os.path.join(root_folder, '../data/preprocessed_data/tft_google')
-    self.model_folder = os.path.join(root_folder, 'saved_models', experiment)
-    self.results_folder = os.path.join(root_folder, 'results', experiment)
-    print('data_folder:', self.data_folder)
+    self.data_folder = os.path.join(self.root_folder, '../../preprocessed_data')
+    self.model_folder = os.path.join(self.root_folder, 'saved_models')
+    self.results_folder = os.path.join(self.root_folder, 'results')
+
+    print("Using output folder {}".format(self.root_folder))
 
     # Creates folders if they don't exist
     for relevant_directory in [
@@ -99,12 +89,7 @@ class ExperimentConfig(object):
 
   @property
   def data_csv_path(self):
-    csv_map = {
-        'volatility': 'formatted_omi_vol.csv',
-        'electricity': 'hourly_electricity.csv',
-        'traffic': 'hourly_data.csv',
-        'favorita': 'favorita_consolidated.csv',
-        
+    csv_map = {       
         'acq_10': 'company_0_10_acq_initaov.csv',
         'acq_100': 'company_0_100_acq_initaov.csv',
         'acq_1000': 'company_0_1000_acq_initaov.csv',
@@ -155,11 +140,6 @@ class ExperimentConfig(object):
     """
 
     data_formatter_class = {
-        # 'volatility': data_formatters.volatility.VolatilityFormatter,
-        # 'electricity': data_formatters.electricity.ElectricityFormatter,
-        # 'traffic': data_formatters.traffic.TrafficFormatter,
-        # 'favorita': data_formatters.favorita.FavoritaFormatter,
-        
         'acq_10': data_formatters.acq.AcqTenFormatter,
         'acq_100': data_formatters.acq.AcqHundredFormatter,
         'acq_1000': data_formatters.acq.AcqThousandFormatter,

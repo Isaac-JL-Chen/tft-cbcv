@@ -22,7 +22,9 @@ Usage:
   python3 script_train_fixed_params {expt_name} {output_folder}
   
   specifying experiment and gpu, and saving printed output on bash into txt file)
-  e.g. python3 -m script_train_fixed_params --expt_name rpt_aov_1000 --gpu_num 6 | tee txt/rpt_aov_1000_s3_best.txt
+  python3 -m script_train_fixed_params --expt_name acq_1000 --gpu_num 6 --output_folder ver1 | tee txt/acq_1000_encoder12.txt
+  python3 -m script_train_fixed_params --expt_name acq_1000 --gpu_num 4 --output_folder ver2 | tee txt/acq_1000_encoder20.txt
+  python3 -m script_train_fixed_params --expt_name acq_1000 --gpu_num 4 --output_folder ver3 | tee txt/acq_1000_encoder18.txt
 
 Command line args:
   expt_name: Name of dataset/experiment to train.
@@ -38,11 +40,13 @@ import os
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+import copy
+import random
 
 ## disable all warning messages
 import warnings
-warnings.filterwarnings("ignore")
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # INFO and WARNING messages are not printed
+# warnings.filterwarnings("ignore")
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # INFO and WARNING messages are not printed
 
 ## load local files
 import data_formatters.base
@@ -103,15 +107,26 @@ def main(expt_name,
     tf_config = utils.get_default_tensorflow_config(tf_device="cpu")
 
 
-  print("\n\n*** Training from defined parameters for experiment: {} ***".format(expt_name))
-  print("Loading & splitting data...") ## data_csv_path is in configs file
+
+  ## read raw data
+  print("\n\n***Loading & splitting data...") ## data_csv_path is in configs file
   raw_data = pd.read_csv(data_csv_path, index_col=0) # first column of raw data is index column Unnamed:0
   print(" - Data is located in: ", data_csv_path)
+
+  ## limit companies which has full validation period
+  validation_start = '2018-11-18'
+  merchant_list = raw_data[raw_data['acq_week']<validation_start].groupby(['merchant_index'], as_index=False)['acq_week'].count()
+  raw_data = pd.merge(raw_data, merchant_list['merchant_index'], on='merchant_index').drop_duplicates()
+  print('There are', raw_data.groupby(['merchant_index'])['merchant_index'].count().shape, 'companies.')
+
+  ## splitting and scaling 
   train, valid, test = data_formatter.split_data(raw_data) # set validation start, test start, test end in data_formatter file
   train_samples, valid_samples = data_formatter.get_num_samples_for_calibration() # if subsampling data
 
 
+
   ## Sets up default params
+  print("\n\n*** Training from defined parameters for experiment: {} ***".format(expt_name))
   # data specific data formatter should define these 5 fixed_params: total time steps of TFT, num LSTM encoder steps, max num epochs, early stopping patience, CPU multiprocessing workers
   fixed_params = data_formatter.get_experiment_params() # Returns fixed model parameters for experiments.
   # data specific data formatter can flexibly have model_params:
@@ -119,7 +134,7 @@ def main(expt_name,
   
   
   ## Folder path where models are serialized
-  model_folder = os.path.join(config.model_folder, datetime.datetime.now().strftime("%Y-%m-%d_%H_%M"))
+  model_folder = config.model_folder
   params["model_folder"] = model_folder
   print("Model will be saved in: ", model_folder)
 
@@ -139,13 +154,14 @@ def main(expt_name,
 
 
   #====================================================
-  print("\n\n*** Running calibration ***")
+  print("\n\n*** Running calibration***")
   ## For each iteration, we start with different initialization to find best parameters set
   ## that provides smallest local minimum of validation loss.
   num_repeats = num_repeats # Training -- one iteration only
   best_loss = np.Inf
   
   for _ in range(num_repeats):
+    random.seed(_)
 
     tf.reset_default_graph()
     with tf.Graph().as_default(), tf.Session(config=tf_config) as sess:
@@ -154,7 +170,7 @@ def main(expt_name,
 
       # set initial parameter, model, training data
       params = opt_manager.get_next_parameters() # get initialized parameters from random search in new iteration
-      model = ModelClass(params, use_cudnn=use_gpu)
+      model = ModelClass(params, use_cudnn=use_gpu) # take 20 seconds
       if not model.training_data_cached():
         # Data to batch and cache & Maximum number of samples to extract (-1 to use all data)
         # model.cache_batched_data(train, "train", num_samples=train_samples)
@@ -182,59 +198,83 @@ def main(expt_name,
   #====================================================
   print("\n\n*** Running tests ***")
   
+  ## build time frame for rolling over
+  prediction_timeframe = pd.concat([valid,test]).acq_week.unique()
+  prediction_timeframe.sort()
+  prediction_timeframe = prediction_timeframe[-params['num_encoder_steps']-len(test.acq_week.unique()):]
+
+  valid_test_data = pd.concat([valid, test]) # we will update this recursively online with predicted values
+  
   tf.reset_default_graph()
   with tf.Graph().as_default(), tf.Session(config=tf_config) as sess:
     # set session on keras
     tf.keras.backend.set_session(sess)
     
     best_params = opt_manager.get_best_params()
-    model = ModelClass(best_params, use_cudnn=use_gpu)
-
+    model = ModelClass(best_params, use_cudnn=use_gpu) # take 20 seconds
     model.load(opt_manager.hyperparam_folder)
 
-    print("\nComputing best validation loss")
-    val_loss = model.evaluate(valid)
-
-
-    print("\nSaving results")
-    ## prepare valid_fortest data
-    test_start = model.predict(test, return_targets=True)["p50"]['forecast_time'].iloc[0]
-    cal_end = model.predict(pd.concat([train,valid]), return_targets=True)["p50"]['forecast_time'].iloc[-1]
-    gap = int(str((pd.to_datetime(test_start) - pd.to_datetime(cal_end))/7).split()[0])-1
+    ## list containers
+    li_inputs=[]
+    li_time=[]
+    li_identifier=[]
+    li_outputs=[]
+    li_combined=[]
+    li_p10=[]
+    li_p50=[]
+    li_p90=[]
+    li_targets=[]
     
-    if expt_name in ['censored_spend_10', 'censored_spend_100', 'censored_spend_1000']:
-      valid_fortest = valid[valid['week'] > str(pd.to_datetime(valid['week'].iloc[-1]) - datetime.timedelta(weeks=gap)).split()[0]]
-    else: 
-      valid_fortest = valid[valid['acq_week'] > str(pd.to_datetime(valid['acq_week'].iloc[-1]) - datetime.timedelta(weeks=gap)).split()[0]]
+    # print("\nComputing best validation loss") # last validation loss for each iteration
+    # val_loss = model.evaluate(valid)
+    
+    ## for prediction (by rolling out) out-of-sample fit
+    for k in range(len(prediction_timeframe) - params['total_time_steps']+1):
+      print(prediction_timeframe[k])
+      onesample = valid_test_data[(valid_test_data['acq_week']>=prediction_timeframe[k]) &
+                                  (valid_test_data['acq_week']<=prediction_timeframe[k+params['total_time_steps']-1])]
+      test_batch_data, test_combined, test_predicted = model.predict(onesample, return_targets=True)
+      
+      li_identifier.append(test_batch_data['identifier']) # np array (sample, total_time_steps = encoder+decoder, 1)
+      li_time.append(test_batch_data['time']) # np array (sample, total_time_steps = encoder+decoder, 1)
+      li_inputs.append(test_batch_data['inputs']) # np array (sample, total_time_steps = encoder+decoder, target + input features)
+      li_outputs.append(test_batch_data['outputs']) # np array (sample, decoder steps, 1)
+      li_combined.append(test_combined) # np array (sample, decoder steps, quantile)
+      li_p10.append(test_predicted['p10']) # pd dataframe {forecast_time, identifier, t+0, t+1, t+2}
+      li_p50.append(test_predicted['p50']) # pd dataframe {forecast_time, identifier, t+0, t+1, t+2}
+      li_p90.append(test_predicted['p90']) # pd dataframe {forecast_time, identifier, t+0, t+1, t+2}
+      li_targets.append(test_predicted['targets']) # pd dataframe {forecast_time, identifier, t+0, t+1, t+2}
+      
+      ## impute p50 one week future (t+0)
+      temp=copy.deepcopy(test_predicted['p50'])
+      temp['merchant_index'] = temp['identifier']
+      predicted_week = str(datetime.datetime.strptime(temp['forecast_time'][0], '%Y-%m-%d').date() + datetime.timedelta(7))
+      temp['acq_week'] = predicted_week
 
+      ## prepare conditional replacement for one sample
+      replacement = pd.merge(valid_test_data, temp[['acq_week', 'merchant_index', 't+0']], 
+                            on=['acq_week', 'merchant_index'])
+      replacement = replacement.drop('N_week_cohort', axis=1)
+      replacement = replacement.rename({'t+0': 'N_week_cohort'}, axis=1)
 
-    print("\nComputing test loss")
-    output_map = model.predict(pd.concat([valid_fortest,test]), return_targets=True)
-    targets = data_formatter.format_predictions(output_map["targets"])
-    p10_forecast = data_formatter.format_predictions(output_map["p10"])
-    p50_forecast = data_formatter.format_predictions(output_map["p50"])
-    p90_forecast = data_formatter.format_predictions(output_map["p90"])
-
-    output_withtrain_map = model.predict(pd.concat([train,valid]), return_targets=True)
-    targets_cal = data_formatter.format_predictions(output_withtrain_map["targets"])
-    p10_forecast_cal = data_formatter.format_predictions(output_withtrain_map["p10"])
-    p50_forecast_cal = data_formatter.format_predictions(output_withtrain_map["p50"])
-    p90_forecast_cal = data_formatter.format_predictions(output_withtrain_map["p90"])
-
-    ### save files
-    if not os.path.exists(f'{config.results_folder}/{version_name}'): os.makedirs(f'{config.results_folder}/{version_name}')
-    targets.to_csv(f'{config.results_folder}/{version_name}/target.csv')
-    targets_cal.to_csv(f'{config.results_folder}/{version_name}/target_cal.csv')
-    p90_forecast.to_csv(f'{config.results_folder}/{version_name}/pred_q90.csv')
-    p90_forecast_cal.to_csv(f'{config.results_folder}/{version_name}/pred_q90_cal.csv')
-    p50_forecast.to_csv(f'{config.results_folder}/{version_name}/pred_q50.csv')
-    p50_forecast_cal.to_csv(f'{config.results_folder}/{version_name}/pred_q50_cal.csv') 
-    p10_forecast.to_csv(f'{config.results_folder}/{version_name}/pred_q10.csv')
-    p10_forecast_cal.to_csv(f'{config.results_folder}/{version_name}/pred_q10_cal.csv')
-
-
-   
-
+      ## combining replaced + unreplaced to update input data
+      valid_test_data = pd.concat([valid_test_data[valid_test_data['acq_week']!=predicted_week], 
+                                  replacement]).sort_values(['merchant_index','acq_week'])  
+    
+    
+    truth_pred = data_formatter.format_predictions(pd.concat(li_targets, axis=0))
+    p10_pred = data_formatter.format_predictions(pd.concat(li_p10, axis=0))
+    p50_pred = data_formatter.format_predictions(pd.concat(li_p50, axis=0))
+    p90_pred = data_formatter.format_predictions(pd.concat(li_p90, axis=0))
+    
+    
+    ## for calibration in-sample fit
+    cal_batch_data, cal_combined, cal_predicted = model.predict(pd.concat([train,valid]), return_targets=True)
+    truth_cal = data_formatter.format_predictions(cal_predicted["targets"])
+    p10_cal = data_formatter.format_predictions(cal_predicted["p10"])
+    p50_cal = data_formatter.format_predictions(cal_predicted["p50"])
+    p90_cal = data_formatter.format_predictions(cal_predicted["p90"])    
+    
     def extract_numerical_data(data):
       """Strips out forecast time and identifier columns."""
       return data[[
@@ -243,34 +283,38 @@ def main(expt_name,
       ]]
 
     p10_loss = utils.numpy_normalised_quantile_loss(
-        extract_numerical_data(targets), extract_numerical_data(p10_forecast),
+        extract_numerical_data(truth_pred), extract_numerical_data(p10_pred),
         0.1)
     p50_loss = utils.numpy_normalised_quantile_loss(
-        extract_numerical_data(targets), extract_numerical_data(p50_forecast),
+        extract_numerical_data(truth_pred), extract_numerical_data(p50_pred),
         0.5)
     p90_loss = utils.numpy_normalised_quantile_loss(
-        extract_numerical_data(targets), extract_numerical_data(p90_forecast),
+        extract_numerical_data(truth_pred), extract_numerical_data(p90_pred),
         0.9)
 
     tf.keras.backend.set_session(default_keras_session)
-
-
-
+    
   print("Training completed @ {}".format(datetime.datetime.now()))
   print("Best validation loss = {x:.5f}".format(x=val_loss))
-  print("Params:")
-
-  for k in best_params:
-    print(k, " = ", best_params[k])
-  print()
   print("Normalised Quantile Loss for Test Data: P50={x1:.5f}, P90={x2:.5f}, P10={x3:.5f}".format(
-      x1=p50_loss.mean(), x2=p90_loss.mean(), x3=p10_loss.mean()))
+    x1=p50_loss.mean(), x2=p90_loss.mean(), x3=p10_loss.mean()))    
+    
 
+    
+  ### save files
+  truth_pred.to_csv(f'{config.results_folder}/truth_pred.csv')
+  p10_pred.to_csv(f'{config.results_folder}/p10_pred.csv')
+  p50_pred.to_csv(f'{config.results_folder}/p50_pred.csv')
+  p90_pred.to_csv(f'{config.results_folder}/p90_pred.csv')
+  
+  truth_cal.to_csv(f'{config.results_folder}/truth_cal.csv')
+  p10_cal.to_csv(f'{config.results_folder}/p10_cal.csv') 
+  p50_cal.to_csv(f'{config.results_folder}/p50_cal.csv')
+  p90_cal.to_csv(f'{config.results_folder}/p90_cal.csv')
 
+  print(f'Saved all predicted results in {config.results_folder}')
 
-
-
-
+   
 
 if __name__ == "__main__":
   # file_writer = tf2.summary.create_file_writer("logs")
@@ -323,8 +367,6 @@ if __name__ == "__main__":
     return args.expt_name, args.gpu_num, root_folder, args.use_gpu == "yes", args.num_iter
 
   name, gpu_num, output_folder, use_tensorflow_with_gpu, num_repeats = get_args()
-
-  print("Using output folder {}".format(output_folder))
 
   config = ExperimentConfig(experiment=name, root_folder=output_folder)
   formatter = config.make_data_formatter()

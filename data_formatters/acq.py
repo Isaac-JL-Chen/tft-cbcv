@@ -620,9 +620,11 @@ class AcqThousandFormatter(GenericDataFormatter):
     """Returns fixed model parameters for experiments."""
 
     fixed_params = {
-        'total_time_steps': 12 + 3,
-        'num_encoder_steps': 12,
-        'num_epochs': 50,
+        # 'total_time_steps': 12 + 3,
+        # 'num_encoder_steps': 12,
+        'total_time_steps': 18 + 3,
+        'num_encoder_steps': 18,
+        'num_epochs': 20,
         'early_stopping_patience': 5,
         'multiprocessing_workers': 5,
     }

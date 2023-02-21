@@ -230,7 +230,7 @@ class HyperparamOptManager:
     self.results[name] = pd.Series({"loss": loss, "info": info})
     self.saved_params[name] = pd.Series(parameters)
 
-    self.results.to_csv(os.path.join(self.hyperparam_folder, "results.csv"))
+    self.results.to_csv(os.path.join(self.hyperparam_folder, "loss.csv"))
     self.saved_params.to_csv(os.path.join(self.hyperparam_folder, "params.csv"))
 
     return is_optimal

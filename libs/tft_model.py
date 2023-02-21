@@ -1237,7 +1237,7 @@ class TemporalFusionTransformer(object):
 
       # 1+2+3) compile
       model.compile(
-          loss=quantile_loss, 
+          loss=quantile_loss, # any form of fn(y_true, y_pred)
           optimizer=adam, 
           sample_weight_mode='temporal')
 
@@ -1311,7 +1311,7 @@ class TemporalFusionTransformer(object):
                          np.concatenate([val_labels, val_labels, val_labels],
                                         axis=-1), val_flags),
         callbacks=all_callbacks,
-        shuffle=True,
+        shuffle=True, # shuffles in batch-sized chunks
         use_multiprocessing=True,
         workers=self.n_multiprocessing_workers)
     
@@ -1319,6 +1319,7 @@ class TemporalFusionTransformer(object):
 
     # Load best checkpoint again
     tmp_checkpont = self.get_keras_saved_path(self._temp_folder)
+    print('tmp_checkpoint: ' + tmp_checkpont)
     if os.path.exists(tmp_checkpont):
       self.load(
           self._temp_folder,
@@ -1412,6 +1413,7 @@ class TemporalFusionTransformer(object):
     identifier = data['identifier']
     outputs = data['outputs']
 
+    # Generates output predictions for the input samples
     combined = self.model.predict(
         inputs,
         workers=16,
@@ -1449,7 +1451,75 @@ class TemporalFusionTransformer(object):
       # Add targets if relevant
       process_map['targets'] = outputs
 
-    return {k: format_outputs(process_map[k]) for k in process_map}
+    return data, combined, {k: format_outputs(process_map[k]) for k in process_map}
+
+
+
+
+
+  def predict_rollout(self, df):
+
+    data = self._batch_data(df)
+
+    inputs = data['inputs']
+    time = data['time']
+    identifier = data['identifier']
+    outputs = data['outputs']
+
+    # for k in range(x):
+
+    # Generates output predictions for the input samples
+    combined = self.model.predict(
+        inputs,
+        workers=16,
+        use_multiprocessing=True,
+        batch_size=self.minibatch_size)
+
+    return inputs, time, identifier, outputs, combined
+
+
+
+  def format_predicted_rollout(self, time, identifier, outputs, combined, return_targets=False):
+    # Format output_csv
+    if self.output_size != 1:
+      raise NotImplementedError('Current version only supports 1D targets!')
+
+    def format_outputs(prediction):
+      """Returns formatted dataframes for prediction."""
+
+      flat_prediction = pd.DataFrame(
+          prediction[:, :, 0],
+          columns=[
+              't+{}'.format(i)
+              for i in range(self.time_steps - self.num_encoder_steps)
+          ])
+      cols = list(flat_prediction.columns)
+      flat_prediction['forecast_time'] = time[:, self.num_encoder_steps - 1, 0]
+      flat_prediction['identifier'] = identifier[:, 0, 0]
+
+      # Arrange in order
+      return flat_prediction[['forecast_time', 'identifier'] + cols]
+
+    # Extract predictions for each quantile into different entries
+    process_map = {
+        'p{}'.format(int(q * 100)):
+        combined[Ellipsis, i * self.output_size:(i + 1) * self.output_size]
+        for i, q in enumerate(self.quantiles)
+    }
+
+    if return_targets:
+      # Add targets if relevant
+      process_map['targets'] = outputs
+
+    return {k: format_outputs(process_map[k]).sort_values(by=['identifier','forecast_time']) for k in process_map}
+
+
+
+
+
+
+
+
 
 
 
@@ -1620,3 +1690,6 @@ class TemporalFusionTransformer(object):
         # 'num_heads': [1, 4],
         'stack_size': [1],
     }
+
+
+
